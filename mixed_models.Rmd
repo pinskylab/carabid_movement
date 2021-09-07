@@ -1,0 +1,45 @@
+---
+title: "Mixed effects models for movement"
+output: 
+    github_document: default
+---
+
+
+```{r}
+library(nlme)
+library(data.table)
+library(ggplot2)
+dat <- fread('data/data_speed.csv')
+```
+## Plot
+```{r}
+ggplot(dat, aes(temperature, log.speed, color = species)) +
+    geom_point()
+
+```
+
+## Simulated data
+```{r}
+sim <- data.table(temperature = sample(10:30, 125, replace = TRUE),
+                  species = as.factor(sample(c('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'), 125, replace = TRUE)))
+sim[, mass := pmax(20, as.numeric(species) * 100 + rnorm(.N, 0, 50))]
+sim[, log.weight.mg := log(mass)]
+sim[, z := as.numeric(species)*2 + 10]
+sim[, log.speed := 5 + 2 * log.weight.mg - (temperature -z)^2/5 + rnorm(.N, 0, 2)]
+
+ggplot(sim, aes(temperature, log.speed, color = species)) +
+    geom_point()
+```
+
+## A first model on simulated data
+```{r}
+metabfunc <- function(lweight, temp, a, b, z, w){
+    lspeed <- a + b * lweight - (temp - z)^2/w
+}
+mod1 <- nlme(log.speed ~ metabfunc(log.weight.mg, temperature, a, b, z, w), 
+             random = z ~ 1|species,
+             fixed = a + b + w ~ 1,
+             start = list(fixed = c(a = 4.8, b = 1.8, w = 4.8)),
+             data = sim)
+```
+
