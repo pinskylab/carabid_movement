@@ -4,42 +4,201 @@ output:
     github_document: default
 ---
 
-
+## Set up
 ```{r}
 library(nlme)
+library(lme4)
 library(data.table)
 library(ggplot2)
+library(RColorBrewer)
 dat <- fread('data/data_speed.csv')
 ```
-## Plot
+## Simulated data
+```{r}
+params <- data.frame(a = 5, b = 2, w = 5)
+sim <- data.table(temperature = sample(10:30, 125, replace = TRUE),
+                  species = as.factor(sample(c('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'), 125, replace = TRUE)))
+sim[, mass := pmax(20, as.numeric(species) * 100 + rnorm(.N, 0, 50))]
+sim[, log.mass.mg := log(mass)]
+sim[, z := as.numeric(species)*2 + 10]
+sim[, log.speed := params$a + params$b * log.mass.mg - (temperature -z)^2/params$w + rnorm(.N, 0, 2)]
+ranefs = sim[, .(z = unique(z)), by = species]
+
+ggplot(sim, aes(temperature, log.speed, color = species)) +
+    geom_point()
+```
+
+### A first model on simulated data
+```{r}
+metabfunc <- function(lmass, temp, a, b, z, w){
+    lspeed <- a + b * lmass - (temp - z)^2/w
+}
+modsim1 <- nlme(log.speed ~ metabfunc(log.mass.mg, temperature, a, b, z, w), 
+             random = z ~ 1|species,
+             fixed = a + b + w ~ 1,
+             start = list(fixed = c(a = 4.8, b = 1.8, w = 4.8)),
+             data = sim)
+
+summary(modsim1)
+```
+
+### Compare estimates to true values
+```{r}
+fixef_est <- summary(modsim1)$tTable
+ranef_est <- ranef(modsim1)
+ranef_est$species <- rownames(ranef_est)
+colnames(ranef_est) <- c('z_est', 'species')
+
+print(data.frame(True = t(params), Est = fixef_est[, 'Value'], StdErr = fixef_est[, 'Std.Error']))
+
+print(merge(ranefs, ranef_est))
+```
+
+## Real data
+### Plot
 ```{r}
 ggplot(dat, aes(temperature, log.speed, color = species)) +
     geom_point()
 
 ```
 
-## Simulated data
+### Original model
 ```{r}
-sim <- data.table(temperature = sample(10:30, 125, replace = TRUE),
-                  species = as.factor(sample(c('a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'), 125, replace = TRUE)))
-sim[, mass := pmax(20, as.numeric(species) * 100 + rnorm(.N, 0, 50))]
-sim[, log.weight.mg := log(mass)]
-sim[, z := as.numeric(species)*2 + 10]
-sim[, log.speed := 5 + 2 * log.weight.mg - (temperature -z)^2/5 + rnorm(.N, 0, 2)]
+modorig <- lmer(log.speed ~ log.mass.mg + temperature + I(temperature^2) + (1|chamber:year),
+                data = dat)
 
-ggplot(sim, aes(temperature, log.speed, color = species)) +
+summary(modorig)
+```
+### Initial nlme model
+Has random intercepts for chamber and year, like lmer model
+```{r}
+metabfunc1 <- function(lmass, temp, a, b, z, w, y){
+    lspeed <- a + b * lmass - (temp - 20 + z)^2/w + y
+}
+
+
+mod0 <- nlme(log.speed ~ metabfunc1(log.mass.mg, temperature, a, b, z, w, y), 
+             fixed = a + b + w + z ~ 1,
+             random = y ~ 1|chamber/year,
+             start = list(fixed = c(a =  -5.6, b = 0.09, w = 5, z= 0)),
+             data = dat)
+summary(mod0)
+ranef(mod0)
+```
+
+#### Plot vs. observed
+```{r}
+dat[, pred_mod0 := predict(mod0)]
+ggplot(dat, aes(log.speed, pred_mod0, color = species)) +
+    geom_point() +
+    geom_abline(intercept = 0, slope = 1)
+
+```
+
+
+#### Plot predictions
+```{r}
+ggplot(dat, aes(temperature, pred_mod0, color = species)) +
     geom_point()
 ```
 
-## A first model on simulated data
+### Model with random optimal temperatures
 ```{r}
-metabfunc <- function(lweight, temp, a, b, z, w){
-    lspeed <- a + b * lweight - (temp - z)^2/w
+metabfunc2 <- function(lmass, temp, a, b, z0, z, w){
+    lspeed <- a + b * lmass - (temp - z0 - z)^2/w
 }
-mod1 <- nlme(log.speed ~ metabfunc(log.weight.mg, temperature, a, b, z, w), 
+
+
+mod1 <- nlme(log.speed ~ metabfunc2(log.mass.mg, temperature, a, b, z0, z, w), 
+             fixed = a + b + w + z0 ~ 1,
              random = z ~ 1|species,
-             fixed = a + b + w ~ 1,
-             start = list(fixed = c(a = 4.8, b = 1.8, w = 4.8)),
-             data = sim)
+             start = list(fixed = c(a =  -3.2, b = 0.09, w = 100, z0= 20)),
+             data = dat)
+summary(mod1)
+print(ranef(mod1))
 ```
 
+#### Plot vs. observed
+```{r}
+dat[, pred_mod1 := predict(mod1)]
+
+ggplot(dat, aes(log.speed, pred_mod1, color = species)) +
+    geom_point() +
+    geom_abline(intercept = 0, slope = 1)
+
+```
+
+#### Plot predictions
+```{r}
+preds <- as.data.table(expand.grid(temperature = seq(5, 35, by = 0.1), 
+                                   species = unique(dat$species), 
+                                   chamber = unique(dat$chamber), year = unique(dat$year),
+                                   stringsAsFactors = FALSE))
+mass <- dat[, .(log.mass.mg = mean(log.mass.mg)), by = species]
+preds <- merge(preds, mass)
+
+preds[, pred_mod1 := predict(mod1, newdata = preds)]
+
+ranefs <- ranef(mod1)
+ranefs$species = rownames(ranefs)
+ranefs <- as.data.table(ranefs)
+
+cols <- brewer.pal(8, 'Dark2')
+sp <- unique(preds$species)
+
+plot(0,0, xlim=c(5,35), ylim = c(-5,-2), xlab = 'Temperature', ylab = 'log speed')
+for(i in 1:length(sp)){
+    minT <- dat[species == sp[i], min(temperature)]
+    maxT <- dat[species == sp[i], max(temperature)]
+    dat[species == sp[i], points(temperature, log.speed, col = cols[i])]
+    ave <- preds[species == sp[i] & 
+                     temperature >= minT & temperature <= maxT &
+                     !is.na(pred_mod1), .(pred_mod1 = mean(pred_mod1)), by = temperature]
+  ave[, lines(temperature, pred_mod1, col = cols[i])]
+  ranefs[species == sp[i], points(fixef(mod1)[4] + z, -5, col = cols[i], pch = 2)]
+}
+legend('topleft', legend = sp, pch = 1, col = cols, cex = 0.5)
+```
+
+### Model with random optimal temperatures and chamber and year effects
+Not working well. Assigns most of the random effects to year differences rather than species differences. Would be better to have separate random effects for the optimal temperature (by species) and for an intercept (by chamber/year).
+```{r}
+metabfunc3 <- function(lmass, temp, a, b, z0, z, w){
+    lspeed <- a + b * lmass - (temp - z0 + z)^2/w
+}
+
+
+mod2 <- nlme(log.speed ~ metabfunc3(log.mass.mg, temperature, a, b, z0, z, w), 
+             fixed = a + b + w + z0 ~ 1,
+             random = z ~1|species/chamber/year,
+             start = list(fixed = c(a =  -3.2, b = 0.09, w = 100, z0= 20)),
+             data = dat)
+summary(mod2)
+print(ranef(mod2))
+```
+#### Plot predictions
+```{r}
+preds <- as.data.table(expand.grid(temperature = seq(5, 35, by = 0.1), 
+                                   species = unique(dat$species), 
+                                   chamber = unique(dat$chamber), year = unique(dat$year),
+                                   stringsAsFactors = FALSE))
+mass <- dat[, .(log.mass.mg = mean(log.mass.mg)), by = species]
+preds <- merge(preds, mass)
+
+preds[, pred_mod2 := predict(mod2, newdata = preds)]
+
+cols <- brewer.pal(8, 'Dark2')
+sp <- unique(preds$species)
+
+plot(0,0, xlim=c(5,35), ylim = c(-5,-2), xlab = 'Temperature', ylab = 'log speed')
+for(i in 1:length(sp)){
+    minT <- dat[species == sp[i], min(temperature)]
+    maxT <- dat[species == sp[i], max(temperature)]
+    dat[species == sp[i], points(temperature, log.speed, col = cols[i])]
+    ave <- preds[species == sp[i] & 
+                     temperature >= minT & temperature <= maxT &
+                     !is.na(pred_mod2), .(pred_mod2 = mean(pred_mod2)), by = temperature]
+  ave[, lines(temperature, pred_mod2, col = cols[i])]
+  
+}
+```
