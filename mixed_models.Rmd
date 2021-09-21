@@ -56,7 +56,7 @@ print(merge(ranefs, ranef_est))
 
 ## Real data
 ### Plot
-```{r}
+```{r, echo = FALSE}
 ggplot(dat, aes(temperature, log.speed, color = species)) +
     geom_point()
 
@@ -87,7 +87,7 @@ ranef(mod0)
 ```
 
 #### Plot vs. observed
-```{r}
+```{r, echo = FALSE}
 dat[, pred_mod0 := predict(mod0)]
 ggplot(dat, aes(log.speed, pred_mod0, color = species)) +
     geom_point() +
@@ -97,7 +97,7 @@ ggplot(dat, aes(log.speed, pred_mod0, color = species)) +
 
 
 #### Plot predictions
-```{r}
+```{r, echo = FALSE}
 ggplot(dat, aes(temperature, pred_mod0, color = species)) +
     geom_point()
 ```
@@ -119,7 +119,7 @@ print(ranef(mod1))
 ```
 
 #### Plot vs. observed
-```{r}
+```{r, echo = FALSE}
 dat[, pred_mod1 := predict(mod1)]
 
 ggplot(dat, aes(log.speed, pred_mod1, color = species)) +
@@ -129,76 +129,48 @@ ggplot(dat, aes(log.speed, pred_mod1, color = species)) +
 ```
 
 #### Plot predictions
-```{r}
+Each species' curve is shown with its T_opt plotted as a triangle at the bottom. The cross-species average is plotted in black.
+```{r, echo = FALSE}
 preds <- as.data.table(expand.grid(temperature = seq(5, 35, by = 0.1), 
                                    species = unique(dat$species), 
                                    chamber = unique(dat$chamber), year = unique(dat$year),
-                                   stringsAsFactors = FALSE))
+                                   mass_type = c('byspecies', 'average'),
+                                   stringsAsFactors = FALSE)) # data table to predict to
+
+# add the average mass per species to the new data table for predictions
 mass <- dat[, .(log.mass.mg = mean(log.mass.mg)), by = species]
 preds <- merge(preds, mass)
+preds[mass_type == 'average', log.mass.mg := mean(mass$log.mass.mg)] # for half the rows, use the average mass across all species (for the fixed effect predictions)
 
+# predict from the random-Topt model
 preds[, pred_mod1 := predict(mod1, newdata = preds)]
+preds[, pred_mod1_fixef := predict(mod1, newdata = preds, level = 0)] # w/out Topt by species
 
-ranefs <- ranef(mod1)
+ranefs <- ranef(mod1) # extract the random effects to get each species' Topt
 ranefs$species = rownames(ranefs)
 ranefs <- as.data.table(ranefs)
 
 cols <- brewer.pal(8, 'Dark2')
 sp <- unique(preds$species)
 
+## make the plot
 plot(0,0, xlim=c(5,35), ylim = c(-5,-2), xlab = 'Temperature', ylab = 'log speed')
-for(i in 1:length(sp)){
+for(i in 1:length(sp)){ # plot a curve for each species
     minT <- dat[species == sp[i], min(temperature)]
     maxT <- dat[species == sp[i], max(temperature)]
     dat[species == sp[i], points(temperature, log.speed, col = cols[i])]
     ave <- preds[species == sp[i] & 
                      temperature >= minT & temperature <= maxT &
-                     !is.na(pred_mod1), .(pred_mod1 = mean(pred_mod1)), by = temperature]
-  ave[, lines(temperature, pred_mod1, col = cols[i])]
-  ranefs[species == sp[i], points(fixef(mod1)[4] + z, -5, col = cols[i], pch = 2)]
+                     !is.na(pred_mod1) &
+                     mass_type == 'byspecies', .(pred_mod1 = mean(pred_mod1)), by = temperature] # average the prediction across years/chambers (all the same anyway) for this species at its species-specific mass
+    ave[, lines(temperature, pred_mod1, col = cols[i])] # plot the curve for this species at its species-specific mass
+    
+    
+    ranefs[species == sp[i], points(fixef(mod1)[4] + z, -5, col = cols[i], pch = 2)] # plot a triangle at the Topt for this species
 }
+ave2 <- preds[!is.na(pred_mod1_fixef) & mass_type == 'average', .(pred_mod1_fixef = mean(pred_mod1_fixef)), by = temperature] # average the fixed-effect prediction across species (all the same anyway) with a cross-species average mass
+ave2[, lines(temperature, pred_mod1_fixef, col = 'black', lwd = 2)] # plot the curve for the average species
+points(fixef(mod1)['z0'], -5, col = 'black', pch = 2) # plot triangle at cross-species Topt
 legend('topleft', legend = sp, pch = 1, col = cols, cex = 0.5)
 ```
 
-### Model with random optimal temperatures and chamber and year effects
-Not working well. Assigns most of the random effects to year differences rather than species differences. Would be better to have separate random effects for the optimal temperature (by species) and for an intercept (by chamber/year).
-```{r}
-metabfunc3 <- function(lmass, temp, a, b, z0, z, w){
-    lspeed <- a + b * lmass - (temp - z0 + z)^2/w
-}
-
-
-mod2 <- nlme(log.speed ~ metabfunc3(log.mass.mg, temperature, a, b, z0, z, w), 
-             fixed = a + b + w + z0 ~ 1,
-             random = z ~1|species/chamber/year,
-             start = list(fixed = c(a =  -3.2, b = 0.09, w = 100, z0= 20)),
-             data = dat)
-summary(mod2)
-print(ranef(mod2))
-```
-#### Plot predictions
-```{r}
-preds <- as.data.table(expand.grid(temperature = seq(5, 35, by = 0.1), 
-                                   species = unique(dat$species), 
-                                   chamber = unique(dat$chamber), year = unique(dat$year),
-                                   stringsAsFactors = FALSE))
-mass <- dat[, .(log.mass.mg = mean(log.mass.mg)), by = species]
-preds <- merge(preds, mass)
-
-preds[, pred_mod2 := predict(mod2, newdata = preds)]
-
-cols <- brewer.pal(8, 'Dark2')
-sp <- unique(preds$species)
-
-plot(0,0, xlim=c(5,35), ylim = c(-5,-2), xlab = 'Temperature', ylab = 'log speed')
-for(i in 1:length(sp)){
-    minT <- dat[species == sp[i], min(temperature)]
-    maxT <- dat[species == sp[i], max(temperature)]
-    dat[species == sp[i], points(temperature, log.speed, col = cols[i])]
-    ave <- preds[species == sp[i] & 
-                     temperature >= minT & temperature <= maxT &
-                     !is.na(pred_mod2), .(pred_mod2 = mean(pred_mod2)), by = temperature]
-  ave[, lines(temperature, pred_mod2, col = cols[i])]
-  
-}
-```
